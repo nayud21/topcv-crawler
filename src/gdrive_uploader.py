@@ -1,12 +1,14 @@
 """
-Google Drive Uploader using Service Account
-Upload files to Google Drive folder
+Google Drive Uploader
+Upload crawled data files to Google Drive
 """
 
-import os
+import argparse
+import glob
 import json
+import os
+import sys
 from pathlib import Path
-from typing import Optional, List
 from datetime import datetime
 
 from google.oauth2 import service_account
@@ -14,233 +16,219 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 
-class GDriveUploader:
-    """Upload files to Google Drive using Service Account"""
-    
-    SCOPES = ['https://www.googleapis.com/auth/drive.file']
-    
-    def __init__(self, credentials_json: str = None, credentials_file: str = None):
-        """
-        Initialize GDrive uploader
-        
-        Args:
-            credentials_json: JSON string of service account credentials
-            credentials_file: Path to service account JSON file
-        """
-        if credentials_json:
-            # Parse from JSON string (for GitHub Actions secrets)
-            creds_dict = json.loads(credentials_json)
-            self.credentials = service_account.Credentials.from_service_account_info(
-                creds_dict, scopes=self.SCOPES
-            )
-        elif credentials_file:
-            # Load from file
-            self.credentials = service_account.Credentials.from_service_account_file(
-                credentials_file, scopes=self.SCOPES
-            )
-        else:
-            raise ValueError("Either credentials_json or credentials_file must be provided")
-        
-        self.service = build('drive', 'v3', credentials=self.credentials)
-    
-    def upload_file(
-        self, 
-        file_path: str, 
-        folder_id: str, 
-        file_name: Optional[str] = None,
-        mime_type: Optional[str] = None
-    ) -> dict:
-        """
-        Upload a file to Google Drive
-        
-        Args:
-            file_path: Local path to file
-            folder_id: Google Drive folder ID
-            file_name: Name for file in Drive (default: original name)
-            mime_type: MIME type of file
-            
-        Returns:
-            Dict with file info including id and webViewLink
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        if file_name is None:
-            file_name = file_path.name
-        
-        # Auto-detect MIME type
-        if mime_type is None:
-            ext = file_path.suffix.lower()
-            mime_types = {
-                '.csv': 'text/csv',
-                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                '.xls': 'application/vnd.ms-excel',
-                '.json': 'application/json',
-                '.txt': 'text/plain',
-                '.pdf': 'application/pdf',
-            }
-            mime_type = mime_types.get(ext, 'application/octet-stream')
-        
-        file_metadata = {
-            'name': file_name,
-            'parents': [folder_id]
-        }
-        
-        media = MediaFileUpload(
-            str(file_path),
-            mimetype=mime_type,
-            resumable=True
-        )
-        
-        file = self.service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, name, webViewLink, size'
-        ).execute()
-        
-        print(f"[INFO] ✅ Uploaded: {file_name}")
-        print(f"[INFO]    File ID: {file.get('id')}")
-        print(f"[INFO]    Link: {file.get('webViewLink')}")
-        
-        return file
-    
-    def upload_folder(
-        self, 
-        local_folder: str, 
-        drive_folder_id: str,
-        pattern: str = "*"
-    ) -> List[dict]:
-        """
-        Upload all files matching pattern from local folder to Drive
-        
-        Args:
-            local_folder: Local folder path
-            drive_folder_id: Google Drive folder ID
-            pattern: Glob pattern for files (default: all files)
-            
-        Returns:
-            List of uploaded file info dicts
-        """
-        local_folder = Path(local_folder)
-        if not local_folder.exists():
-            raise FileNotFoundError(f"Folder not found: {local_folder}")
-        
-        uploaded = []
-        for file_path in local_folder.glob(pattern):
-            if file_path.is_file():
-                try:
-                    result = self.upload_file(str(file_path), drive_folder_id)
-                    uploaded.append(result)
-                except Exception as e:
-                    print(f"[ERROR] Failed to upload {file_path}: {e}")
-        
-        return uploaded
-    
-    def create_folder(self, folder_name: str, parent_id: Optional[str] = None) -> str:
-        """
-        Create a folder in Google Drive
-        
-        Args:
-            folder_name: Name of the folder
-            parent_id: Parent folder ID (optional)
-            
-        Returns:
-            Created folder ID
-        """
-        file_metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        
-        if parent_id:
-            file_metadata['parents'] = [parent_id]
-        
-        folder = self.service.files().create(
-            body=file_metadata,
-            fields='id, name, webViewLink'
-        ).execute()
-        
-        print(f"[INFO] ✅ Created folder: {folder_name}")
-        print(f"[INFO]    Folder ID: {folder.get('id')}")
-        
-        return folder.get('id')
-    
-    def list_files(self, folder_id: str, page_size: int = 100) -> List[dict]:
-        """
-        List files in a Google Drive folder
-        
-        Args:
-            folder_id: Google Drive folder ID
-            page_size: Number of files to return
-            
-        Returns:
-            List of file info dicts
-        """
-        results = self.service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            pageSize=page_size,
-            fields="files(id, name, mimeType, size, createdTime, modifiedTime)"
-        ).execute()
-        
-        return results.get('files', [])
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 
-def upload_to_gdrive(
-    file_path: str,
-    folder_id: str,
-    credentials_json: str = None,
-    credentials_file: str = None
-) -> dict:
+def authenticate(credentials_path: str = None, credentials_json: str = None):
     """
-    Convenience function to upload a single file
+    Authenticate với Google Drive API
     
     Args:
-        file_path: Path to local file
-        folder_id: Google Drive folder ID
-        credentials_json: JSON string of service account credentials
-        credentials_file: Path to service account JSON file
-        
-    Returns:
-        Uploaded file info dict
+        credentials_path: Đường dẫn đến file JSON credentials
+        credentials_json: Nội dung JSON credentials (dùng cho GitHub Actions)
     """
-    # Try environment variable if not provided
-    if not credentials_json and not credentials_file:
-        credentials_json = os.environ.get('GDRIVE_CREDENTIALS')
-    
-    if not credentials_json and not credentials_file:
-        raise ValueError(
-            "No credentials provided. Set GDRIVE_CREDENTIALS env var "
-            "or pass credentials_json/credentials_file"
+    if credentials_json:
+        # Parse JSON string
+        creds_dict = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=SCOPES
         )
+    elif credentials_path and os.path.exists(credentials_path):
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=SCOPES
+        )
+    else:
+        raise ValueError("Cần cung cấp credentials_path hoặc credentials_json")
     
-    uploader = GDriveUploader(
-        credentials_json=credentials_json,
-        credentials_file=credentials_file
+    service = build('drive', 'v3', credentials=credentials)
+    return service
+
+
+def upload_file(service, file_path: str, folder_id: str, overwrite: bool = True) -> dict:
+    """
+    Upload file lên Google Drive
+    
+    Args:
+        service: Google Drive service
+        file_path: Đường dẫn file cần upload
+        folder_id: ID folder Google Drive
+        overwrite: Ghi đè nếu file đã tồn tại
+    
+    Returns:
+        dict: Thông tin file đã upload
+    """
+    file_path = Path(file_path)
+    file_name = file_path.name
+    
+    # Xác định MIME type
+    mime_types = {
+        '.csv': 'text/csv',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.xls': 'application/vnd.ms-excel',
+        '.json': 'application/json',
+        '.txt': 'text/plain',
+    }
+    mime_type = mime_types.get(file_path.suffix.lower(), 'application/octet-stream')
+    
+    # Kiểm tra file đã tồn tại chưa
+    if overwrite:
+        query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        existing_files = results.get('files', [])
+        
+        # Xóa file cũ nếu tồn tại
+        for f in existing_files:
+            print(f"   🗑️ Xóa file cũ: {f['name']} (ID: {f['id']})")
+            service.files().delete(fileId=f['id']).execute()
+    
+    # Upload file mới
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    
+    media = MediaFileUpload(
+        str(file_path),
+        mimetype=mime_type,
+        resumable=True
     )
     
-    return uploader.upload_file(file_path, folder_id)
-
-
-if __name__ == "__main__":
-    import argparse
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id, name, webViewLink'
+    ).execute()
     
+    return file
+
+
+def upload_multiple_files(
+    service, 
+    file_patterns: list, 
+    folder_id: str, 
+    overwrite: bool = True
+) -> list:
+    """
+    Upload nhiều files theo pattern
+    
+    Args:
+        service: Google Drive service
+        file_patterns: List các glob patterns (e.g., ['data/*.csv', 'data/*.xlsx'])
+        folder_id: ID folder Google Drive
+        overwrite: Ghi đè nếu file đã tồn tại
+    
+    Returns:
+        list: Danh sách files đã upload
+    """
+    uploaded_files = []
+    
+    for pattern in file_patterns:
+        files = glob.glob(pattern)
+        for file_path in files:
+            if os.path.isfile(file_path):
+                print(f"📤 Uploading: {file_path}")
+                try:
+                    result = upload_file(service, file_path, folder_id, overwrite)
+                    print(f"   ✅ Uploaded: {result['name']}")
+                    print(f"   🔗 Link: {result.get('webViewLink', 'N/A')}")
+                    uploaded_files.append(result)
+                except Exception as e:
+                    print(f"   ❌ Error uploading {file_path}: {e}")
+    
+    return uploaded_files
+
+
+def main():
     parser = argparse.ArgumentParser(description="Upload files to Google Drive")
-    parser.add_argument("--file", "-f", required=True, help="File to upload")
-    parser.add_argument("--folder-id", "-d", required=True, help="Google Drive folder ID")
-    parser.add_argument("--credentials", "-c", help="Path to service account JSON file")
+    parser.add_argument(
+        "--credentials", "-c",
+        type=str,
+        default="credentials.json",
+        help="Path to credentials JSON file"
+    )
+    parser.add_argument(
+        "--credentials-json",
+        type=str,
+        default=None,
+        help="Credentials JSON string (alternative to file)"
+    )
+    parser.add_argument(
+        "--folder-id", "-f",
+        type=str,
+        required=True,
+        help="Google Drive folder ID"
+    )
+    parser.add_argument(
+        "--file-pattern", "-p",
+        type=str,
+        nargs="+",
+        default=["data/*.csv", "data/*.xlsx"],
+        help="File patterns to upload (default: data/*.csv data/*.xlsx)"
+    )
+    parser.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Don't overwrite existing files"
+    )
     
     args = parser.parse_args()
     
-    credentials_json = os.environ.get('GDRIVE_CREDENTIALS')
+    print("=" * 50)
+    print("☁️  Google Drive Uploader")
+    print("=" * 50)
+    print(f"📁 Folder ID: {args.folder_id}")
+    print(f"📋 Patterns: {args.file_pattern}")
+    print("=" * 50)
     
-    result = upload_to_gdrive(
-        file_path=args.file,
-        folder_id=args.folder_id,
-        credentials_json=credentials_json,
-        credentials_file=args.credentials
-    )
+    # Check if any files exist
+    all_files = []
+    for pattern in args.file_pattern:
+        all_files.extend(glob.glob(pattern))
     
-    print(f"\n✅ Upload complete!")
-    print(f"File ID: {result.get('id')}")
-    print(f"Link: {result.get('webViewLink')}")
+    if not all_files:
+        print("⚠️ Không tìm thấy file nào để upload")
+        print(f"   Patterns: {args.file_pattern}")
+        return 0
+    
+    print(f"\n📂 Tìm thấy {len(all_files)} files:")
+    for f in all_files:
+        print(f"   - {f}")
+    print()
+    
+    try:
+        # Authenticate
+        print("🔐 Đang xác thực với Google Drive...")
+        
+        # Ưu tiên credentials từ environment variable (GitHub Actions)
+        creds_json = args.credentials_json or os.environ.get('GDRIVE_CREDENTIALS')
+        
+        if creds_json:
+            service = authenticate(credentials_json=creds_json)
+        else:
+            service = authenticate(credentials_path=args.credentials)
+        
+        print("✅ Xác thực thành công!\n")
+        
+        # Upload files
+        uploaded = upload_multiple_files(
+            service,
+            args.file_pattern,
+            args.folder_id,
+            overwrite=not args.no_overwrite
+        )
+        
+        print("\n" + "=" * 50)
+        print(f"🎉 Đã upload {len(uploaded)} files lên Google Drive!")
+        print("=" * 50)
+        
+        return 0
+        
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
