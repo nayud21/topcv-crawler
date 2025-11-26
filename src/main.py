@@ -1,203 +1,155 @@
 """
-Main entry point for TopCV Job Crawler
-Crawl jobs and upload to Google Drive
+TopCV Job Crawler - Main Entry Point
 """
 
-import os
-import sys
 import argparse
-from pathlib import Path
+import sys
+import os
 from datetime import datetime
+from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
 
-from src.scrape_topcv import crawl_many_keywords, slugify
-from src.gdrive_uploader import GDriveUploader, upload_to_gdrive
+from scrape_topcv import crawl_many_keywords, slugify
 
 
-# Default keywords to crawl
-DEFAULT_KEYWORDS = [
-    "Data Analyst",
-    "Data Engineer", 
-    "Data Scientist",
-    "Backend Developer",
-    "Frontend Developer",
-    "DevOps Engineer",
-    "QA Engineer",
-    "Mobile Developer",
-    "Software Engineer",
-    "Machine Learning",
-    "Python Developer",
-    "Java Developer",
-]
+def parse_keywords(keywords_input: str) -> list:
+    """
+    Parse keywords from input string.
+    Supports both comma-separated and semicolon-separated.
+    
+    Examples:
+        "Data Analyst,Data Engineer" -> ["Data Analyst", "Data Engineer"]
+        "Data Analyst;Data Engineer" -> ["Data Analyst", "Data Engineer"]
+    """
+    # Try semicolon first (safer for keywords with spaces)
+    if ';' in keywords_input:
+        keywords = [k.strip() for k in keywords_input.split(';')]
+    else:
+        keywords = [k.strip() for k in keywords_input.split(',')]
+    
+    # Remove empty strings
+    keywords = [k for k in keywords if k]
+    return keywords
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Crawl TopCV IT jobs and upload to Google Drive"
-    )
-    
-    # Crawl options
-    parser.add_argument(
-        "--keywords", "-k", 
-        nargs="+", 
-        default=DEFAULT_KEYWORDS,
-        help="Keywords to search for"
+        description="TopCV Job Crawler - Crawl job listings from TopCV.vn"
     )
     parser.add_argument(
-        "--start-page", 
-        type=int, 
+        "--keywords", "-k",
+        type=str,
+        default="Data Analyst;Data Engineer;Python Developer",
+        help="Keywords to search (semicolon-separated recommended, e.g., 'Data Analyst;Data Engineer')"
+    )
+    parser.add_argument(
+        "--start-page", "-s",
+        type=int,
         default=1,
-        help="Start page number"
+        help="Start page number (default: 1)"
     )
     parser.add_argument(
-        "--end-page", 
-        type=int, 
+        "--end-page", "-e",
+        type=int,
         default=3,
-        help="End page number"
+        help="End page number (default: 3)"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default="data",
+        help="Output directory (default: data)"
     )
     parser.add_argument(
         "--crawl-date",
         type=str,
         default=None,
-        help="Crawl date (YYYY-MM-DD). Default: today"
-    )
-    
-    # Output options
-    parser.add_argument(
-        "--output-dir", "-o",
-        default="./data",
-        help="Output directory for crawled data"
+        help="Crawl date in YYYY-MM-DD format (default: today)"
     )
     parser.add_argument(
-        "--output-prefix",
-        default="topcv_jobs",
-        help="Prefix for output files"
+        "--format", "-f",
+        type=str,
+        choices=["csv", "xlsx", "both"],
+        default="both",
+        help="Output format (default: both)"
     )
-    
-    # Google Drive options
-    parser.add_argument(
-        "--upload-gdrive",
-        action="store_true",
-        help="Upload to Google Drive after crawling"
-    )
-    parser.add_argument(
-        "--gdrive-folder-id",
-        default=None,
-        help="Google Drive folder ID. Can also use GDRIVE_FOLDER_ID env var"
-    )
-    parser.add_argument(
-        "--gdrive-credentials",
-        default=None,
-        help="Path to Google Drive service account JSON. Can also use GDRIVE_CREDENTIALS env var"
-    )
-    
+
     args = parser.parse_args()
+
+    # Parse keywords
+    keywords = parse_keywords(args.keywords)
     
+    if not keywords:
+        print("❌ Error: No valid keywords provided")
+        sys.exit(1)
+
     # Set crawl date
     crawl_date = args.crawl_date or datetime.now().strftime("%Y-%m-%d")
-    
+
     # Create output directory
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Print info
     print("=" * 60)
     print("🕷️  TopCV Job Crawler")
     print("=" * 60)
     print(f"📅 Crawl date: {crawl_date}")
-    print(f"🔍 Keywords: {', '.join(args.keywords)}")
+    print(f"🔍 Keywords ({len(keywords)}): {keywords}")
     print(f"📄 Pages: {args.start_page} - {args.end_page}")
     print(f"📁 Output: {output_dir}")
     print("=" * 60)
-    
-    # Crawl data
-    print("\n🚀 Starting crawl...")
-    df = crawl_many_keywords(
-        keywords=args.keywords,
-        start_page=args.start_page,
-        end_page=args.end_page,
-        delay_between_pages=(1.0, 2.0),
-        sleep_between_keywords=(2.0, 3.0),
-        crawl_date=crawl_date
-    )
-    
-    if df.empty:
-        print("❌ No data collected!")
-        return 1
-    
-    print(f"\n✅ Collected {len(df)} jobs")
-    
-    # Save combined file
-    output_prefix = f"{args.output_prefix}_{crawl_date}"
-    csv_path = output_dir / f"{output_prefix}_combined.csv"
-    xlsx_path = output_dir / f"{output_prefix}_combined.xlsx"
-    
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"💾 Saved: {csv_path}")
-    
-    try:
-        df.to_excel(xlsx_path, index=False)
-        print(f"💾 Saved: {xlsx_path}")
-    except Exception as e:
-        print(f"⚠️ XLSX save failed: {e}")
-        xlsx_path = None
-    
-    # Save per-keyword files
-    saved_files = [csv_path]
-    if xlsx_path:
-        saved_files.append(xlsx_path)
-    
-    for kw in args.keywords:
+
+    # Show URL preview
+    print("\n📋 URL Preview:")
+    for kw in keywords:
         slug = slugify(kw)
-        df_kw = df[df["search_slug"] == slug] if "search_slug" in df.columns else df
-        if not df_kw.empty:
-            kw_path = output_dir / f"{args.output_prefix}_{slug}_{crawl_date}.csv"
-            df_kw.to_csv(kw_path, index=False, encoding="utf-8-sig")
-            print(f"💾 Saved: {kw_path}")
-            saved_files.append(kw_path)
-    
-    # Upload to Google Drive
-    if args.upload_gdrive:
-        print("\n☁️  Uploading to Google Drive...")
-        
-        folder_id = args.gdrive_folder_id or os.environ.get('GDRIVE_FOLDER_ID')
-        credentials_json = os.environ.get('GDRIVE_CREDENTIALS')
-        credentials_file = args.gdrive_credentials
-        
-        if not folder_id:
-            print("❌ No Google Drive folder ID provided!")
-            print("   Set --gdrive-folder-id or GDRIVE_FOLDER_ID env var")
-            return 1
-        
-        if not credentials_json and not credentials_file:
-            print("❌ No Google Drive credentials provided!")
-            print("   Set --gdrive-credentials or GDRIVE_CREDENTIALS env var")
-            return 1
-        
-        try:
-            uploader = GDriveUploader(
-                credentials_json=credentials_json,
-                credentials_file=credentials_file
-            )
-            
-            # Upload main files (CSV and XLSX)
-            for file_path in [csv_path, xlsx_path]:
-                if file_path and file_path.exists():
-                    uploader.upload_file(str(file_path), folder_id)
-            
-            print("\n✅ Upload complete!")
-            
-        except Exception as e:
-            print(f"❌ Upload failed: {e}")
-            return 1
-    
-    print("\n" + "=" * 60)
-    print("🎉 Crawl completed successfully!")
-    print("=" * 60)
-    
-    return 0
+        url = f"https://www.topcv.vn/tim-viec-lam-{slug}?page=1"
+        print(f"   - '{kw}' → {url}")
+    print()
+
+    print("\n🚀 Starting crawl...")
+
+    try:
+        df = crawl_many_keywords(
+            keywords=keywords,
+            start_page=args.start_page,
+            end_page=args.end_page,
+            crawl_date=crawl_date
+        )
+
+        if df is None or df.empty:
+            print("⚠️ Warning: No data collected")
+            # Create empty file to indicate run completed
+            empty_file = output_dir / f"no_data_{crawl_date}.txt"
+            empty_file.write_text(f"No data collected on {crawl_date}\nKeywords: {keywords}")
+            sys.exit(0)
+
+        print(f"\n✅ Collected {len(df)} jobs")
+
+        # Save files
+        base_filename = f"topcv_jobs_{crawl_date}"
+
+        if args.format in ["csv", "both"]:
+            csv_path = output_dir / f"{base_filename}.csv"
+            df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+            print(f"💾 Saved: {csv_path}")
+
+        if args.format in ["xlsx", "both"]:
+            xlsx_path = output_dir / f"{base_filename}.xlsx"
+            df.to_excel(xlsx_path, index=False, engine="openpyxl")
+            print(f"💾 Saved: {xlsx_path}")
+
+        print("\n🎉 Crawl completed successfully!")
+
+    except Exception as e:
+        print(f"\n❌ Error during crawl: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

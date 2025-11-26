@@ -1,18 +1,18 @@
-name: Crawl TopCV Jobs
+name: TopCV Job Crawler
 
 on:
   # Run on schedule (UTC time)
   schedule:
-    # Run daily at 6:00 AM UTC (1:00 PM Vietnam time)
-    - cron: '0 6 * * *'
+    # Run daily at 1:00 AM UTC (8:00 AM Vietnam time)
+    - cron: '0 1 * * *'
   
   # Allow manual trigger
   workflow_dispatch:
     inputs:
       keywords:
-        description: 'Keywords to search (comma-separated)'
+        description: 'Keywords (semicolon-separated, e.g., "Data Analyst;Python Developer")'
         required: false
-        default: 'Data Analyst,Data Engineer,Data Scientist,Backend Developer,Frontend Developer,DevOps Engineer'
+        default: 'Data Analyst;Data Engineer;Python Developer'
       start_page:
         description: 'Start page'
         required: false
@@ -20,7 +20,7 @@ on:
       end_page:
         description: 'End page'
         required: false
-        default: '3'
+        default: '2'
 
 env:
   PYTHON_VERSION: '3.11'
@@ -43,41 +43,66 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: 📅 Set crawl date (Vietnam timezone)
+        id: date
+        run: |
+          CRAWL_DATE=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d')
+          echo "crawl_date=$CRAWL_DATE" >> $GITHUB_OUTPUT
+          echo "📅 Crawl date (Vietnam): $CRAWL_DATE"
       
       - name: 🕷️ Run crawler
         env:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          # Set keywords from input or use defaults
+          # Set keywords from input or use defaults (semicolon-separated)
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             KEYWORDS="${{ github.event.inputs.keywords }}"
             START_PAGE="${{ github.event.inputs.start_page }}"
             END_PAGE="${{ github.event.inputs.end_page }}"
           else
-            KEYWORDS="Data Analyst,Data Engineer,Data Scientist,Backend Developer,Frontend Developer,DevOps Engineer,QA Engineer,Software Engineer,Machine Learning,Python Developer"
+            KEYWORDS="Data Analyst;Data Engineer;Python Developer;Backend Developer;Frontend Developer"
             START_PAGE="1"
-            END_PAGE="3"
+            END_PAGE="2"
           fi
           
-          # Convert comma-separated to space-separated for argparse
-          KEYWORDS_ARGS=$(echo "$KEYWORDS" | tr ',' '\n' | sed 's/^/"/' | sed 's/$/"/' | tr '\n' ' ')
-          
+          echo "============================================"
           echo "🔍 Keywords: $KEYWORDS"
           echo "📄 Pages: $START_PAGE - $END_PAGE"
+          echo "📅 Crawl Date: ${{ steps.date.outputs.crawl_date }}"
+          echo "============================================"
           
           # Run the crawler
           python -m src.main \
-            --keywords $KEYWORDS_ARGS \
-            --start-page $START_PAGE \
-            --end-page $END_PAGE \
-            --output-dir ./data \
-            --upload-gdrive
+            --keywords "$KEYWORDS" \
+            --start-page "$START_PAGE" \
+            --end-page "$END_PAGE" \
+            --output data \
+            --crawl-date "${{ steps.date.outputs.crawl_date }}"
+
+      - name: ☁️ Upload to Google Drive
+        if: success()
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          if [ -n "$GDRIVE_CREDENTIALS" ] && [ -n "$GDRIVE_FOLDER_ID" ]; then
+            if ls data/*.csv 1> /dev/null 2>&1 || ls data/*.xlsx 1> /dev/null 2>&1; then
+              echo "📤 Uploading files to Google Drive..."
+              python -m src.upload_gdrive
+            else
+              echo "⚠️ No data files to upload"
+            fi
+          else
+            echo "⚠️ Google Drive credentials not configured, skipping upload"
+          fi
       
       - name: 📊 Upload artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: crawl-data-${{ github.run_id }}
+          name: crawl-data-${{ steps.date.outputs.crawl_date }}
           path: data/
           retention-days: 30
       
@@ -85,7 +110,7 @@ jobs:
         run: |
           echo "## 🕷️ Crawl Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📅 Date: $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "📅 Date: ${{ steps.date.outputs.crawl_date }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Files created:" >> $GITHUB_STEP_SUMMARY
           ls -la data/*.csv 2>/dev/null | awk '{print "- " $NF}' >> $GITHUB_STEP_SUMMARY || echo "No CSV files created" >> $GITHUB_STEP_SUMMARY

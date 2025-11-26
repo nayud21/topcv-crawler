@@ -19,41 +19,67 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
 BASE = "https://www.topcv.vn"
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/123.0.0.0 Safari/537.36"),
-    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Referer": "https://www.topcv.vn/",
-    "Connection": "keep-alive",
-}
+
+# Rotate User-Agents to avoid detection
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+]
+
+
+def get_headers() -> dict:
+    """Get headers with random User-Agent"""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.topcv.vn/",
+        "Connection": "keep-alive",
+        "Cache-Control": "max-age=0",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
 
 
 def build_session() -> requests.Session:
     s = requests.Session()
-    s.headers.update(HEADERS)
+    s.headers.update(get_headers())
 
     retry = Retry(
-        total=6,
+        total=5,
         connect=3,
         read=3,
-        status=6,
-        backoff_factor=1.2,
+        status=5,
+        backoff_factor=2.0,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset(["GET", "HEAD"]),
         raise_on_status=False,
         respect_retry_after_header=True,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=50)
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
 
+    # Initial request to get cookies
     try:
-        s.get(BASE, timeout=20)
-        time.sleep(1.0)
-    except requests.RequestException:
-        pass
+        print("[INFO] Initializing session with TopCV...")
+        r = s.get(BASE, timeout=30)
+        if r.status_code == 200:
+            print("[INFO] Session initialized successfully")
+        time.sleep(random.uniform(2.0, 4.0))
+    except requests.RequestException as e:
+        print(f"[WARN] Failed to initialize session: {e}")
+    
     return s
 
 
@@ -64,29 +90,64 @@ def text(el) -> Optional[str]:
     return re.sub(r"\s+", " ", t) if t else None
 
 
-def smart_sleep(min_s=1.2, max_s=2.8):
-    time.sleep(random.uniform(min_s, max_s))
+def smart_sleep(min_s=2.0, max_s=5.0):
+    """Sleep with random delay to avoid detection"""
+    delay = random.uniform(min_s, max_s)
+    time.sleep(delay)
 
 
 def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
+    """Get BeautifulSoup object with retry logic and anti-bot measures"""
     for attempt in range(1, 6):
-        r = session.get(url, timeout=30)
-        if r.status_code == 429:
-            retry_after = r.headers.get("Retry-After")
-            if retry_after:
+        try:
+            # Rotate User-Agent on each attempt
+            session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
+            
+            # Add random delay before request
+            if attempt > 1:
+                wait_time = random.uniform(3.0, 6.0) * attempt
+                print(f"[INFO] Waiting {wait_time:.1f}s before retry...")
+                time.sleep(wait_time)
+            
+            r = session.get(url, timeout=30)
+            
+            if r.status_code == 200:
+                return BeautifulSoup(r.text, "lxml")
+            
+            if r.status_code == 403:
+                print(f"[WARN] 403 Forbidden at {url} (attempt {attempt}/5)")
+                if attempt < 5:
+                    # Wait longer and try with new headers
+                    wait_time = random.uniform(10.0, 20.0) * attempt
+                    print(f"[INFO] Waiting {wait_time:.1f}s before retry with new headers...")
+                    time.sleep(wait_time)
+                    session.headers.update(get_headers())
+                    continue
+                else:
+                    print(f"[ERROR] Failed after 5 attempts for {url}")
+                    return BeautifulSoup("", "lxml")
+            
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After", str(30 * attempt))
                 try:
                     wait = int(retry_after)
                 except ValueError:
-                    wait = 6 * attempt
-            else:
-                wait = 6 * attempt
-            wait = wait + random.uniform(0.5, 2.0)
-            print(f"[WARN] 429 at {url} → sleeping {wait:.1f}s (attempt {attempt})")
-            time.sleep(wait)
-            continue
-        r.raise_for_status()
-        return BeautifulSoup(r.text, "lxml")
-    r.raise_for_status()
+                    wait = 30 * attempt
+                wait = wait + random.uniform(5.0, 15.0)
+                print(f"[WARN] 429 Rate Limited → sleeping {wait:.1f}s (attempt {attempt}/5)")
+                time.sleep(wait)
+                continue
+            
+            r.raise_for_status()
+            return BeautifulSoup(r.text, "lxml")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[WARN] Request error (attempt {attempt}/5): {e}")
+            if attempt < 5:
+                time.sleep(random.uniform(5.0, 10.0) * attempt)
+                continue
+            raise
+    
     return BeautifulSoup("", "lxml")
 
 
