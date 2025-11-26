@@ -20,66 +20,43 @@ from requests.adapters import HTTPAdapter
 
 BASE = "https://www.topcv.vn"
 
-# Rotate User-Agents to avoid detection
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-]
-
-
-def get_headers() -> dict:
-    """Get headers with random User-Agent"""
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://www.topcv.vn/",
-        "Connection": "keep-alive",
-        "Cache-Control": "max-age=0",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-    }
+# Dùng 1 User-Agent cố định như file gốc (hoạt động tốt hơn)
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/123.0.0.0 Safari/537.36"),
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.topcv.vn/",
+    "Connection": "keep-alive",
+}
 
 
 def build_session() -> requests.Session:
+    """Build session giống file gốc (đã hoạt động)"""
     s = requests.Session()
-    s.headers.update(get_headers())
+    s.headers.update(HEADERS)
 
     retry = Retry(
-        total=5,
+        total=6,
         connect=3,
         read=3,
-        status=5,
-        backoff_factor=2.0,
+        status=6,
+        backoff_factor=1.2,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset(["GET", "HEAD"]),
         raise_on_status=False,
         respect_retry_after_header=True,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=50)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
 
-    # Initial request to get cookies
     try:
-        print("[INFO] Initializing session with TopCV...")
-        r = s.get(BASE, timeout=30)
-        if r.status_code == 200:
-            print("[INFO] Session initialized successfully")
-        time.sleep(random.uniform(2.0, 4.0))
-    except requests.RequestException as e:
-        print(f"[WARN] Failed to initialize session: {e}")
-    
+        s.get(BASE, timeout=20)
+        time.sleep(1.0)
+    except requests.RequestException:
+        pass
     return s
 
 
@@ -90,64 +67,31 @@ def text(el) -> Optional[str]:
     return re.sub(r"\s+", " ", t) if t else None
 
 
-def smart_sleep(min_s=2.0, max_s=5.0):
-    """Sleep with random delay to avoid detection"""
-    delay = random.uniform(min_s, max_s)
-    time.sleep(delay)
+def smart_sleep(min_s=1.2, max_s=2.8):
+    """Sleep giống file gốc"""
+    time.sleep(random.uniform(min_s, max_s))
 
 
 def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
-    """Get BeautifulSoup object with retry logic and anti-bot measures"""
+    """Get soup giống file gốc - chỉ xử lý 429, không xử lý 403"""
     for attempt in range(1, 6):
-        try:
-            # Rotate User-Agent on each attempt
-            session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
-            
-            # Add random delay before request
-            if attempt > 1:
-                wait_time = random.uniform(3.0, 6.0) * attempt
-                print(f"[INFO] Waiting {wait_time:.1f}s before retry...")
-                time.sleep(wait_time)
-            
-            r = session.get(url, timeout=30)
-            
-            if r.status_code == 200:
-                return BeautifulSoup(r.text, "lxml")
-            
-            if r.status_code == 403:
-                print(f"[WARN] 403 Forbidden at {url} (attempt {attempt}/5)")
-                if attempt < 5:
-                    # Wait longer and try with new headers
-                    wait_time = random.uniform(10.0, 20.0) * attempt
-                    print(f"[INFO] Waiting {wait_time:.1f}s before retry with new headers...")
-                    time.sleep(wait_time)
-                    session.headers.update(get_headers())
-                    continue
-                else:
-                    print(f"[ERROR] Failed after 5 attempts for {url}")
-                    return BeautifulSoup("", "lxml")
-            
-            if r.status_code == 429:
-                retry_after = r.headers.get("Retry-After", str(30 * attempt))
+        r = session.get(url, timeout=30)
+        if r.status_code == 429:
+            retry_after = r.headers.get("Retry-After")
+            if retry_after:
                 try:
                     wait = int(retry_after)
                 except ValueError:
-                    wait = 30 * attempt
-                wait = wait + random.uniform(5.0, 15.0)
-                print(f"[WARN] 429 Rate Limited → sleeping {wait:.1f}s (attempt {attempt}/5)")
-                time.sleep(wait)
-                continue
-            
-            r.raise_for_status()
-            return BeautifulSoup(r.text, "lxml")
-            
-        except requests.exceptions.RequestException as e:
-            print(f"[WARN] Request error (attempt {attempt}/5): {e}")
-            if attempt < 5:
-                time.sleep(random.uniform(5.0, 10.0) * attempt)
-                continue
-            raise
-    
+                    wait = 6 * attempt
+            else:
+                wait = 6 * attempt
+            wait = wait + random.uniform(0.5, 2.0)
+            print(f"[WARN] 429 tại {url} → ngủ {wait:.1f}s (attempt {attempt})")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return BeautifulSoup(r.text, "lxml")
+    r.raise_for_status()
     return BeautifulSoup("", "lxml")
 
 
@@ -376,14 +320,7 @@ def crawl_to_dataframe(
     crawl_date: str = None
 ) -> pd.DataFrame:
     """
-    Crawl and add crawl_date column to DataFrame
-    
-    Args:
-        query_url_template: URL template with {page}
-        start_page: Start page
-        end_page: End page
-        delay_between_pages: Delay between pages
-        crawl_date: Crawl date (format YYYY-MM-DD). If None, use today
+    Crawl và thêm cột crawl_date vào DataFrame
     """
     if crawl_date is None:
         crawl_date = datetime.now().strftime("%Y-%m-%d")
@@ -399,7 +336,7 @@ def crawl_to_dataframe(
         jobs = parse_search_page(s, url)
 
         if not jobs:
-            print(f"[INFO] Page {page} has no jobs — stopping early.")
+            print(f"[INFO] Trang {page} không còn job — dừng sớm.")
             break
 
         for j in jobs:
@@ -412,7 +349,7 @@ def crawl_to_dataframe(
             try:
                 detail = scrape_job_detail(s, job_url)
             except Exception as e:
-                print(f"[WARN] Error job detail {job_url}: {e}")
+                print(f"[WARN] Lỗi job detail {job_url}: {e}")
                 detail = {k: None for k in [
                     "detail_title", "detail_salary", "detail_location",
                     "detail_experience", "deadline", "tags", "desc_mota",
@@ -425,7 +362,7 @@ def crawl_to_dataframe(
             try:
                 comp = scrape_company(s, company_url)
             except Exception as e:
-                print(f"[WARN] Error company {company_url}: {e}")
+                print(f"[WARN] Lỗi company {company_url}: {e}")
                 comp = {k: None for k in [
                     "company_name_full", "company_website", "company_size",
                     "company_industry", "company_address", "company_description"
@@ -459,7 +396,7 @@ def crawl_to_dataframe(
 
 
 def slugify(text: str) -> str:
-    """'Data Engineer' -> 'data-engineer', 'Kỹ sư phần mềm' -> 'ky-su-phan-mem'."""
+    """'Data Engineer' -> 'data-engineer'"""
     text = unicodedata.normalize("NFD", text)
     text = text.encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^a-zA-Z0-9\s-]", " ", text)
@@ -481,7 +418,7 @@ def crawl_many_keywords(
     sleep_between_keywords=(1.0, 2.0),
     crawl_date: str = None
 ) -> pd.DataFrame:
-    """Crawl multiple keywords and return combined DataFrame."""
+    """Crawl nhiều keyword và trả về DataFrame gộp."""
     if crawl_date is None:
         crawl_date = datetime.now().strftime("%Y-%m-%d")
     

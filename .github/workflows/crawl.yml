@@ -4,7 +4,7 @@ on:
   # Run on schedule (UTC time)
   schedule:
     # Run daily at 1:00 AM UTC (8:00 AM Vietnam time)
-    - cron: '0 1 * * *'
+    - cron: '0 18 * * *'
   
   # Allow manual trigger
   workflow_dispatch:
